@@ -16,7 +16,7 @@
 
 import os
 from typing import Union
-from .utils import PushToHubMixin, logging
+from ..utils import PushToHubMixin, logging
 
 logger = logging.get_logger(__name__)
 
