@@ -23,6 +23,7 @@ from typing import Any, Dict, Union
 
 from packaging import version
 
+from ..configuration_utils import BaseConfig
 from ..utils import is_torch_available, logging
 
 
@@ -34,7 +35,7 @@ logger = logging.get_logger(__name__)
 
 
 @dataclass
-class BitsAndBytesConfig:
+class BitsAndBytesConfig(BaseConfig):
     """
     This is a wrapper class about all possible attributes and features that you can play with a model that has been
     loaded using `bitsandbytes`.
@@ -208,15 +209,8 @@ class BitsAndBytesConfig:
         Args:
             json_file_path (`str` or `os.PathLike`):
                 Path to the JSON file in which this configuration instance's parameters will be saved.
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default
-                `BitsAndBytesConfig()` is serialized to JSON file.
         """
-        with open(json_file_path, "w", encoding="utf-8") as writer:
-            config_dict = self.to_dict()
-            json_string = json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
-
-            writer.write(json_string)
+        super().to_json_file(json_file_path, use_diff=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -228,46 +222,3 @@ class BitsAndBytesConfig:
         output["bnb_4bit_compute_dtype"] = str(output["bnb_4bit_compute_dtype"]).split(".")[1]
 
         return output
-
-    def __repr__(self):
-        return f"{self.__class__.__name__} {self.to_json_string()}"
-
-    def to_json_string(self, use_diff: bool = True) -> str:
-        """
-        Serializes this instance to a JSON string.
-
-        Args:
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default `PretrainedConfig()`
-                is serialized to JSON string.
-
-        Returns:
-            `str`: String containing all the attributes that make up this configuration instance in JSON format.
-        """
-        if use_diff is True:
-            config_dict = self.to_diff_dict()
-        else:
-            config_dict = self.to_dict()
-        return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
-
-    def to_diff_dict(self) -> Dict[str, Any]:
-        """
-        Removes all attributes from config which correspond to the default config attributes for better readability and
-        serializes to a Python dictionary.
-
-        Returns:
-            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance,
-        """
-        config_dict = self.to_dict()
-
-        # get the default config dict
-        default_config_dict = BitsAndBytesConfig().to_dict()
-
-        serializable_config_dict = {}
-
-        # only serialize values that differ from the default config
-        for key, value in config_dict.items():
-            if value != default_config_dict[key]:
-                serializable_config_dict[key] = value
-
-        return serializable_config_dict

@@ -21,7 +21,7 @@ import warnings
 from typing import Any, Dict, Optional, Union
 
 from .. import __version__
-from ..configuration_utils import PretrainedConfig
+from ..configuration_utils import BaseConfig, PretrainedConfig
 from ..utils import (
     GENERATION_CONFIG_NAME,
     PushToHubMixin,
@@ -36,7 +36,7 @@ from ..utils import (
 logger = logging.get_logger(__name__)
 
 
-class GenerationConfig(PushToHubMixin):
+class GenerationConfig(BaseConfig, PushToHubMixin):
     r"""
     Class that holds a configuration for a generation task. A `generate` call supports the following generation methods
     for text-decoder, text-to-text, speech-to-text, and vision-to-text models:
@@ -321,9 +321,6 @@ class GenerationConfig(PushToHubMixin):
             self_dict.pop(metadata_field, None)
             other_dict.pop(metadata_field, None)
         return self_dict == other_dict
-
-    def __repr__(self):
-        return f"{self.__class__.__name__} {self.to_json_string()}"
 
     def validate(self):
         """
@@ -622,18 +619,8 @@ class GenerationConfig(PushToHubMixin):
         Returns:
             `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance,
         """
-        config_dict = self.to_dict()
-
-        # get the default config dict
-        default_config_dict = GenerationConfig().to_dict()
-
-        serializable_config_dict = {}
-
-        # only serialize values that differ from the default config
-        for key, value in config_dict.items():
-            if key not in default_config_dict or key == "transformers_version" or value != default_config_dict[key]:
-                serializable_config_dict[key] = value
-
+        serializable_config_dict = super().to_diff_dict()
+        serializable_config_dict["transformers_version"] = self.transformers_version  # Always incude the version
         self.dict_torch_dtype_to_str(serializable_config_dict)
         return serializable_config_dict
 
@@ -653,38 +640,6 @@ class GenerationConfig(PushToHubMixin):
 
         self.dict_torch_dtype_to_str(output)
         return output
-
-    def to_json_string(self, use_diff: bool = True) -> str:
-        """
-        Serializes this instance to a JSON string.
-
-        Args:
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default `GenerationConfig()`
-                is serialized to JSON string.
-
-        Returns:
-            `str`: String containing all the attributes that make up this configuration instance in JSON format.
-        """
-        if use_diff is True:
-            config_dict = self.to_diff_dict()
-        else:
-            config_dict = self.to_dict()
-        return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
-
-    def to_json_file(self, json_file_path: Union[str, os.PathLike], use_diff: bool = True):
-        """
-        Save this instance to a JSON file.
-
-        Args:
-            json_file_path (`str` or `os.PathLike`):
-                Path to the JSON file in which this configuration instance's parameters will be saved.
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default `GenerationConfig()`
-                is serialized to JSON file.
-        """
-        with open(json_file_path, "w", encoding="utf-8") as writer:
-            writer.write(self.to_json_string(use_diff=use_diff))
 
     @classmethod
     def from_model_config(cls, model_config: PretrainedConfig) -> "GenerationConfig":

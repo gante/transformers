@@ -46,10 +46,97 @@ logger = logging.get_logger(__name__)
 _re_configuration_file = re.compile(r"config\.(.*)\.json")
 
 
-class PretrainedConfig(PushToHubMixin):
+class BaseConfig:
     r"""
-    Base class for all configuration classes. Handles a few parameters common to all models' configurations as well as
-    methods for loading/downloading/saving configurations.
+    Base class for all configuration classes. Contains common functionality like (de)serialization.
+    """
+
+    def __eq__(self, other):
+        return isinstance(other, self.__class__) and (self.__dict__ == other.__dict__)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__} {self.to_json_string()}"
+
+    def to_json_string(self, use_diff: bool = True) -> str:
+        """
+        Serializes this instance to a JSON string.
+
+        Args:
+            use_diff (`bool`, *optional*, defaults to `True`):
+                If set to `True`, only the difference between the config instance and the default class configuration
+                is serialized to JSON string.
+
+        Returns:
+            `str`: String containing all the attributes that make up this configuration instance in JSON format.
+        """
+        if use_diff is True:
+            config_dict = self.to_diff_dict()
+        else:
+            config_dict = self.to_dict()
+        return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
+
+    def to_json_file(self, json_file_path: Union[str, os.PathLike], use_diff: bool = True):
+        """
+        Save this instance to a JSON file.
+
+        Args:
+            json_file_path (`str` or `os.PathLike`):
+                Path to the JSON file in which this configuration instance's parameters will be saved.
+            use_diff (`bool`, *optional*, defaults to `True`):
+                If set to `True`, only the difference between the config instance and the default class configuration
+                is serialized to JSON file.
+        """
+        with open(json_file_path, "w", encoding="utf-8") as writer:
+            writer.write(self.to_json_string(use_diff=use_diff))
+
+    def _to_diff_dict(self, attibutes_to_keep, ) -> Dict[str, Any]:
+        """
+        Core funtionality of `to_diff_dict`.
+
+        Returns:
+            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
+        """
+        config_dict = self.to_dict()
+
+        # get the default config dict
+        default_config_dict = self.__class__().to_dict()
+
+        serializable_config_dict = {}
+
+        # only serialize values that differ from the default config
+        for key, value in config_dict.items():
+            if key not in default_config_dict or value != default_config_dict[key]:
+                serializable_config_dict[key] = value
+
+        return serializable_config_dict
+
+    def to_diff_dict(self, ) -> Dict[str, Any]:
+        """
+        Removes all attributes from config which correspond to the default config attributes for better readability and
+        serializes to a Python dictionary.
+
+        Returns:
+            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
+        """
+        config_dict = self.to_dict()
+
+        # get the default config dict
+        default_config_dict = self.__class__().to_dict()
+
+        serializable_config_dict = {}
+
+        # only serialize values that differ from the default config
+        for key, value in config_dict.items():
+            if key not in default_config_dict or value != default_config_dict[key]:
+                serializable_config_dict[key] = value
+
+        return serializable_config_dict
+
+
+class PretrainedConfig(BaseConfig, PushToHubMixin):
+    r"""
+    Base class for all model configuration classes. Handles a few parameters common to all models' configurations as
+    well as methods for loading/downloading/saving configurations.
 
     <Tip>
 
@@ -793,12 +880,6 @@ class PretrainedConfig(PushToHubMixin):
             text = reader.read()
         return json.loads(text)
 
-    def __eq__(self, other):
-        return isinstance(other, PretrainedConfig) and (self.__dict__ == other.__dict__)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__} {self.to_json_string()}"
-
     def to_diff_dict(self) -> Dict[str, Any]:
         """
         Removes all attributes from config which correspond to the default config attributes for better readability and
@@ -866,38 +947,6 @@ class PretrainedConfig(PushToHubMixin):
         self.dict_torch_dtype_to_str(output)
 
         return output
-
-    def to_json_string(self, use_diff: bool = True) -> str:
-        """
-        Serializes this instance to a JSON string.
-
-        Args:
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default `PretrainedConfig()`
-                is serialized to JSON string.
-
-        Returns:
-            `str`: String containing all the attributes that make up this configuration instance in JSON format.
-        """
-        if use_diff is True:
-            config_dict = self.to_diff_dict()
-        else:
-            config_dict = self.to_dict()
-        return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
-
-    def to_json_file(self, json_file_path: Union[str, os.PathLike], use_diff: bool = True):
-        """
-        Save this instance to a JSON file.
-
-        Args:
-            json_file_path (`str` or `os.PathLike`):
-                Path to the JSON file in which this configuration instance's parameters will be saved.
-            use_diff (`bool`, *optional*, defaults to `True`):
-                If set to `True`, only the difference between the config instance and the default `PretrainedConfig()`
-                is serialized to JSON file.
-        """
-        with open(json_file_path, "w", encoding="utf-8") as writer:
-            writer.write(self.to_json_string(use_diff=use_diff))
 
     def update(self, config_dict: Dict[str, Any]):
         """
