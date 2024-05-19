@@ -1901,13 +1901,13 @@ class GenerationMixin:
     def _dola_decoding(
         self,
         input_ids: torch.LongTensor,
+        dola_layers: Union[str, List[int]],
         logits_processor: LogitsProcessorList,
         stopping_criteria: StoppingCriteriaList,
         generation_config: GenerationConfig,
         synced_gpus: bool,
         streamer: Optional["BaseStreamer"] = None,
         logits_warper: Optional[LogitsProcessorList] = None,
-        dola_layers: Optional[Union[str, List[int]]] = "low",
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
@@ -1918,6 +1918,10 @@ class GenerationMixin:
         Parameters:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
                 The sequence used as a prompt for the generation.
+            dola_layers (`Union[str, List[int]]`):
+                The candidate layers used in contrasting layers of DoLa.
+                It can be either 1) 'low' or 'high', which means the lower part or higher part of the model layers, respectively,
+                or 2) a list of layer indices to be used for candidate layers. The 0-th layer is the word embedding layer of the model.
             logits_processor (`LogitsProcessorList`):
                 An instance of [`LogitsProcessorList`]. List of instances of class derived from [`LogitsProcessor`]
                 used to modify the prediction scores of the language modeling head applied at each generation step.
@@ -1936,10 +1940,6 @@ class GenerationMixin:
                 to warp the prediction score distribution of the language modeling head applied before multinomial
                 sampling at each generation step. Only required with sampling strategies (i.e. `do_sample` is set in
                 `generation_config`)
-            dola_layers (`Union[str, List[int]]`, *optional*, defaults to `low`):
-                The candidate layers used in contrasting layers of DoLa.
-                It can be either 1) 'low' or 'high', which means the lower part or higher part of the model layers, respectively,
-                or 2) a list of layer indices to be used for candidate layers. The 0-th layer is the word embedding layer of the model.
             model_kwargs:
                 Additional model specific kwargs will be forwarded to the `forward` function of the model. If model is
                 an encoder-decoder model the kwargs should include `encoder_outputs`.
