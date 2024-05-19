@@ -20,7 +20,6 @@
 """ PyTorch Mixtral model."""
 import inspect
 import math
-import warnings
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -323,12 +322,7 @@ class MixtralAttention(nn.Module):
         past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-            )
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -422,15 +416,7 @@ class MixtralFlashAttention2(MixtralAttention):
         past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        **kwargs,
     ):
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-            )
-
-            # overwrite attention_mask with padding_mask
-            attention_mask = kwargs.pop("padding_mask")
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -805,14 +791,6 @@ class MixtralBlockSparseTop2MLP(nn.Module):
         return current_hidden_states
 
 
-class MixtralBLockSparseTop2MLP(MixtralBlockSparseTop2MLP):
-    def __init__(self, *args, **kwargs):
-        logger.warning_once(
-            "MixtralBLockSparseTop2MLP is deprecated by MixtralBlockSparseTop2MLP and will be removed in v4.40."
-        )
-        super().__init__(*args, **kwargs)
-
-
 class MixtralSparseMoeBlock(nn.Module):
     """
     This implementation is
@@ -837,9 +815,14 @@ class MixtralSparseMoeBlock(nn.Module):
 
         self.experts = nn.ModuleList([MixtralBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
 
+        # Jitter parameters
+        self.jitter_noise = config.router_jitter_noise
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
+        if self.training and self.jitter_noise > 0:
+            hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
@@ -863,18 +846,11 @@ class MixtralSparseMoeBlock(nn.Module):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
 
-            if top_x.shape[0] == 0:
-                continue
-
-            # in torch it is faster to index using lists than torch tensors
-            top_x_list = top_x.tolist()
-            idx_list = idx.tolist()
-
             # Index the correct hidden states and compute the expert hidden state for
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
-            current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-            current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
+            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
 
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.
@@ -903,12 +879,7 @@ class MixtralDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         output_router_logits: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-            )
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -1190,6 +1161,7 @@ class MixtralModel(MixtralPreTrainedModel):
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
+                sliding_window=self.config.sliding_window,
             )
         else:
             # 4d mask is passed through the layers
@@ -1526,7 +1498,7 @@ class MixtralForSequenceClassification(MixtralPreTrainedModel):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,

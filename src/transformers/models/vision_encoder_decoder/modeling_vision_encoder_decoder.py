@@ -190,10 +190,10 @@ class VisionEncoderDecoderModel(PreTrainedModel):
         super().__init__(config)
 
         if encoder is None:
-            encoder = AutoModel.from_config(config.encoder)
+            encoder = AutoModel.from_config(config.encoder, attn_implementation=config._attn_implementation)
 
         if decoder is None:
-            decoder = AutoModelForCausalLM.from_config(config.decoder)
+            decoder = AutoModelForCausalLM.from_config(config.decoder, attn_implementation=config._attn_implementation)
 
         self.encoder = encoder
         self.decoder = decoder
@@ -336,8 +336,20 @@ class VisionEncoderDecoderModel(PreTrainedModel):
                 del tf_model
                 gc.collect()
 
+                attn_implementation = kwargs.get("attn_implementation", None)
+                kwargs_encoder_decoder = {}
+                if attn_implementation:
+                    kwargs_encoder_decoder = {
+                        "encoder_attn_implementation": attn_implementation,
+                        "decoder_attn_implementation": attn_implementation,
+                    }
+
                 model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-                    encoder_dir, decoder_dir, encoder_from_tf=True, decoder_from_tf=True
+                    encoder_dir,
+                    decoder_dir,
+                    encoder_from_tf=True,
+                    decoder_from_tf=True,
+                    **kwargs_encoder_decoder,
                 )
                 # This is only for copying some specific attributes of this particular model.
                 model.config = config
