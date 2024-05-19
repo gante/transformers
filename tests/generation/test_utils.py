@@ -1248,6 +1248,7 @@ class GenerationTesterMixin:
             # enable cache if the model is not openai-gpt, xlnet, cpm, or xlm
             config, input_ids, attention_mask, _ = self._get_input_ids_and_config(batch_size=1)
 
+            # Some models don't support the cache and returning past_key_values
             if not hasattr(config, "use_cache"):
                 config.use_cache = False
             else:
