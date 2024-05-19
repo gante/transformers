@@ -1962,7 +1962,6 @@ class GenerationMixin:
         # init values
 
         pad_token_id = generation_config.pad_token_id
-        eos_token_id = generation_config.eos_token_id
         output_attentions = generation_config.output_attentions
         output_hidden_states = generation_config.output_hidden_states
         output_scores = generation_config.output_scores
@@ -1985,9 +1984,6 @@ class GenerationMixin:
 
         # keep track of which sequences are already finished
         batch_size = input_ids.shape[0]
-
-        if "inputs_embeds" in model_kwargs:
-            cur_len = model_kwargs["inputs_embeds"].shape[1]
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
@@ -2063,7 +2059,7 @@ class GenerationMixin:
             next_token_scores = logits_processor(input_ids, next_token_logits)
             if do_sample:
                 next_token_scores = logits_warper(input_ids, next_token_scores)
-            
+
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 if output_scores:
