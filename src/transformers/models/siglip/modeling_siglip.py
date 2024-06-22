@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch Siglip model."""
-
+"""PyTorch Siglip model."""
 
 import math
 import warnings
@@ -96,7 +95,7 @@ def trunc_normal_tf_(
 
     NOTE: this 'tf' variant behaves closer to Tensorflow / JAX impl where the
     bounds [a, b] are applied when sampling the normal distribution with mean=0, std=1.0
-    and the result is subsquently scaled and shifted by the mean and std args.
+    and the result is subsequently scaled and shifted by the mean and std args.
 
     Args:
         tensor: an n-dimensional `torch.Tensor`
@@ -960,7 +959,7 @@ class SiglipMultiheadAttentionPoolingHead(nn.Module):
 class SiglipVisionModel(SiglipPreTrainedModel):
     config_class = SiglipVisionConfig
     main_input_name = "pixel_values"
-    _no_split_modules = ["SiglipVisionTransformer"]
+    _no_split_modules = ["SiglipVisionEmbeddings", "SiglipEncoderLayer", "SiglipMultiheadAttentionPoolingHead"]
 
     def __init__(self, config: SiglipVisionConfig):
         super().__init__(config)
