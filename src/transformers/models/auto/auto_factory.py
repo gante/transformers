@@ -407,6 +407,7 @@ def _get_model_class(config, model_mapping):
 class _BaseAutoModelClass:
     # Base class for auto models.
     _model_mapping = None
+    _accepted_nested_config_names = None
 
     def __init__(self, *args, **kwargs):
         raise EnvironmentError(
@@ -564,6 +565,20 @@ class _BaseAutoModelClass:
             return model_class.from_pretrained(
                 pretrained_model_name_or_path, *model_args, config=config, **hub_kwargs, **kwargs
             )
+        elif cls._accepted_nested_config_names is not None:
+            # If the config type does not match the model mapping, we might be trying to load a component of the
+            # pretrained model (e.g. the text decoder in a VLM).
+            valid_nested_names = [name for name in cls._accepted_nested_config_names if hasattr(config, name)]
+            if len(valid_nested_names) == 1:  # Otherwise it's abiguous
+                nested_config = getattr(config, valid_nested_names[0])
+                nested_config._name_or_path = pretrained_model_name_or_path
+                setattr(nested_config, "original_model_type", config.model_type)
+                breakpoint()
+                model_class = _get_model_class(nested_config, cls._model_mapping)
+                return model_class.from_pretrained(
+                    pretrained_model_name_or_path, *model_args, config=nested_config, **hub_kwargs, **kwargs
+                )
+
         raise ValueError(
             f"Unrecognized configuration class {config.__class__} for this kind of AutoModel: {cls.__name__}.\n"
             f"Model type should be one of {', '.join(c.__name__ for c in cls._model_mapping.keys())}."
