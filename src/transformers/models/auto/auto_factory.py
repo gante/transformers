@@ -573,7 +573,6 @@ class _BaseAutoModelClass:
                 nested_config = getattr(config, valid_nested_names[0])
                 nested_config._name_or_path = pretrained_model_name_or_path
                 setattr(nested_config, "original_model_type", config.model_type)
-                breakpoint()
                 model_class = _get_model_class(nested_config, cls._model_mapping)
                 return model_class.from_pretrained(
                     pretrained_model_name_or_path, *model_args, config=nested_config, **hub_kwargs, **kwargs
