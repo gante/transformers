@@ -351,6 +351,8 @@ def _prepare_flash_attention_from_position_ids(query, key, value, position_ids):
     # requires `max_length_q`, `max_length_k` to be passed as `int` and not `torch.Tensor`.
     # https://github.com/Dao-AILab/flash-attention/blob/2dd8078adc1d9b74e315ee99718c0dea0de8eeb6/flash_attn/flash_attn_interface.py#L1423-L1424
     max_length = position_ids.max().item() + 1
+    bsz = (position_ids == 0).sum().item()
+    breakpoint()
 
     return (query, key, value, indices_q, (cu_seq_lens, cu_seq_lens), (max_length, max_length))
 
@@ -514,14 +516,25 @@ def _flash_attention_forward(
     # under two cases:
     # Case 1. If position_ids is provided and check all examples do not contain only 1 sequence, If tensor in increasing
     # then we probably have one sequence, otherwise it is packed. Additionally check we are in pre-fill/training stage.
+    is_fa2_with_position_ids = (
+        position_ids is not None
+        and query_states.shape[0] == 1  # assumes packing can only happen with bsz == 1
+        and (
+            max_length_q is not None
+            or (
+                query_length != 1
+                # torch.compile-friendly of `(torch.diff(position_ids, dim=-1) >= 0).all()` for bsz == 1 -> an unpacked
+                # `position_ids` is a continuguous sequence of increasing integers, so we compare against an `arange`
+                and (
+                    (torch.arange(position_ids.shape[1], device=position_ids.device) + position_ids.min())
+                    != position_ids
+                ).any()
+            )
+        )
+    )
     # Case 2. Some models pass directly pre-computed `cu_seqlens` so we don't need to infer it from position ids. It is safe to
     # use `flash_attn_varlen_func` knowing we already have all necessary the kwargs. NOTE: it is user's responsibility
     # to take care of flattenning `position_ids` if that's needed by the model. See #39121 for more information
-    is_fa2_with_position_ids = (
-        position_ids is not None
-        and query_states.shape[0] == 1
-        and (max_length_q is not None or (query_length != 1 and not (torch.diff(position_ids, dim=-1) >= 0).all()))
-    )
     is_fa2_with_varlen_kwargs = all(
         kwarg is not None for kwarg in (cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
     )
@@ -548,42 +561,97 @@ def _flash_attention_forward(
             **flash_kwargs,
         )
         attn_output = _pad_input(attn_output_unpad, indices_q, batch_size, query_length)
+    else:
+        # the next logical branch depends on `is_fa2_with_position_ids`, which depends on the data in `position_ids`.
+        # We can't have data-dependent control flow with torch.compile, so we use `torch.cond` to branch.
+        # Note: we can't pass `None` arguments to `torch.cond`, so `is_fa2_with_varlen_kwargs` and
+        # `is_fa2_with_position_ids` have to be separate branches, despite both calling `_flash_attn_varlen_func`
 
-    elif is_fa2_with_varlen_kwargs or is_fa2_with_position_ids:
-        batch_size = query_states.size(0)
+        # branch for `if is_fa2_with_varlen_kwargs`
+        def _fa_varlen_kwargs_branch(query_states, key_states, value_states, position_ids, cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k):
+            batch_size = query_states.size(0)
+            query_states = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
+            key_states = key_states.reshape(-1, key_states.size(-2), key_states.size(-1))
+            value_states = value_states.reshape(-1, value_states.size(-2), value_states.size(-1))
 
-        if cu_seq_lens_q is None or cu_seq_lens_k is None:
-            query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = (
+            attn_output = _flash_attn_varlen_func(
+                query_states,
+                key_states,
+                value_states,
+                cu_seqlens_q=cu_seq_lens_q,
+                cu_seqlens_k=cu_seq_lens_k,
+                max_seqlen_q=max_length_q,
+                max_seqlen_k=max_length_k,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                **flash_kwargs,
+            )
+
+            attn_output = attn_output.view(batch_size, -1, attn_output.size(-2), attn_output.size(-1))
+            return attn_output
+
+        # branch for `elif is_fa2_with_position_ids`. This branch requires `TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1` to
+        # be compiled.
+        def _fa_position_ids_packing_branch(query_states, key_states, value_states, position_ids):
+            batch_size = query_states.size(0)
+            query_states, key_states, value_states, _, cu_seq_lens, max_seq_lens = (
                 _prepare_flash_attention_from_position_ids(query_states, key_states, value_states, position_ids)
             )
 
             cu_seq_lens_q, cu_seq_lens_k = cu_seq_lens
             max_length_q, max_length_k = max_seq_lens
 
-        else:
-            query_states = query_states.reshape(-1, query_states.size(-2), query_states.size(-1))
-            key_states = key_states.reshape(-1, key_states.size(-2), key_states.size(-1))
-            value_states = value_states.reshape(-1, value_states.size(-2), value_states.size(-1))
+            attn_output = _flash_attn_varlen_func(
+                query_states,
+                key_states,
+                value_states,
+                cu_seqlens_q=cu_seq_lens_q,
+                cu_seqlens_k=cu_seq_lens_k,
+                max_seqlen_q=max_length_q,
+                max_seqlen_k=max_length_k,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                **flash_kwargs,
+            )
 
-        attn_output = _flash_attn_varlen_func(
-            query_states,
-            key_states,
-            value_states,
-            cu_seqlens_q=cu_seq_lens_q,
-            cu_seqlens_k=cu_seq_lens_k,
-            max_seqlen_q=max_length_q,
-            max_seqlen_k=max_length_k,
-            softmax_scale=softmax_scale,
-            causal=causal,
-            **flash_kwargs,
+            attn_output = attn_output.view(batch_size, -1, attn_output.size(-2), attn_output.size(-1))
+            return attn_output
+
+        # branch for `else`
+        def _fa_default_branch(query_states, key_states, value_states, position_ids):
+            attn_output = _flash_attn_func(
+                query_states, key_states, value_states, softmax_scale=softmax_scale, causal=causal, **flash_kwargs
+            )
+            return attn_output
+
+        _fa_default_branch(query_states, key_states, value_states, position_ids)
+        compiled_1 = torch.compile(_fa_default_branch, fullgraph=True)
+        compiled_1(query_states, key_states, value_states, position_ids)
+
+        _fa_position_ids_packing_branch(query_states, key_states, value_states, position_ids)
+        compiled_2 = torch.compile(_fa_position_ids_packing_branch, fullgraph=True)
+        compiled_2(query_states, key_states, value_states, position_ids)
+        breakpoint()
+
+        false_fn=torch.cond(
+            pred=is_fa2_with_position_ids,
+            true_fn=_fa_position_ids_packing_branch,
+            false_fn=_fa_default_branch,
+            operands=(query_states, key_states, value_states, position_ids)
         )
 
-        attn_output = attn_output.view(batch_size, -1, attn_output.size(-2), attn_output.size(-1))
 
-    else:
-        attn_output = _flash_attn_func(
-            query_states, key_states, value_states, softmax_scale=softmax_scale, causal=causal, **flash_kwargs
-        )
+        # attn_output = torch.cond(
+        #     pred=is_fa2_with_varlen_kwargs,
+        #     true_fn=_fa_varlen_kwargs_branch,
+        #     false_fn=torch.cond(
+        #         pred=is_fa2_with_position_ids,
+        #         true_fn=_fa_position_ids_packing_branch,
+        #         false_fn=_fa_default_branch,
+        #         operands=(query_states, key_states, value_states, position_ids)
+        #     ),
+        #     operands=(query_states, key_states, value_states, position_ids, cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k)
+        # )
 
     if isinstance(attn_output, tuple):
         return attn_output[0]
