@@ -44,6 +44,7 @@ from transformers.utils.import_utils import (
     is_librosa_available,
     is_openai_available,
     is_pydantic_available,
+    is_soundfile_available,
     is_uvicorn_available,
 )
 
@@ -73,6 +74,9 @@ if is_torch_available():
 if is_librosa_available():
     import librosa
 
+if is_soundfile_available():
+    import soundfile
+
 serve_dependencies_available = (
     is_pydantic_available() and is_fastapi_available() and is_uvicorn_available() and is_openai_available()
 )
@@ -82,6 +86,7 @@ if serve_dependencies_available:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
     from openai.types.audio.transcription import Transcription
+    from openai.types.audio.speech_create_params import SpeechCreateParams
     from openai.types.audio.transcription_create_params import TranscriptionCreateParamsBase
     from openai.types.chat.chat_completion_chunk import (
         ChatCompletionChunk,
@@ -135,10 +140,17 @@ if serve_dependencies_available:
         generation_config: str
         stream: Optional[bool] = False
 
+    class TransformersSpeechCreateParams(SpeechCreateParams, total=False):
+        """
+        OpenAI's SpeechCreateParams with an additional field for the generation config (as a json string).
+        """
+        generation_config: str
+
     # Contrarily to OpenAI's output types, input types are `TypedDict`, which don't have built-in validation.
     response_validator = TypeAdapter(TransformersResponseCreateParamsStreaming)
     completion_validator = TypeAdapter(TransformersCompletionCreateParamsStreaming)
     transcription_validator = TypeAdapter(TransformersTranscriptionCreateParams)
+    speech_validator = TypeAdapter(TransformersSpeechCreateParams)
 
     # Define request fields that are not yet used in `transformers serve`. Receiving these fields will raise an
     # HTTPException.
@@ -188,6 +200,14 @@ if serve_dependencies_available:
         "prompt",
         "response_format",
         "timestamp_granularities",
+    }
+
+    UNUSED_SPEECH_FIELDS = {
+        "voice",
+        "instructions",
+        "response_format",
+        "speed",
+        "stream_format",
     }
 
 
@@ -545,6 +565,14 @@ class ServeCommand(BaseTransformersCLICommand):
             unused_fields=UNUSED_TRANSCRIPTION_FIELDS,
         )
 
+    def validate_speech_request(self, request: dict):
+        self._validate_request(
+            request=request,
+            schema=TransformersSpeechCreateParams,
+            validator=speech_validator,
+            unused_fields=UNUSED_SPEECH_FIELDS,
+        )
+
     def build_chat_completion_chunk(
         self,
         request_id: Optional[str] = "",
@@ -662,6 +690,13 @@ class ServeCommand(BaseTransformersCLICommand):
             self.validate_transcription_request(request=parsed_request)
 
             output = self.generate_transcription(parsed_request)
+            return StreamingResponse(output, media_type="text/event-stream")
+
+        @app.post("/v1/audio/speech")
+        def chat_completion(request: dict):
+            self.validate_speech_request(request=request)
+
+            output = self.generate_speech(request)
             return StreamingResponse(output, media_type="text/event-stream")
 
         @app.options("/v1/models")
@@ -1261,7 +1296,7 @@ class ServeCommand(BaseTransformersCLICommand):
 
     def generate_transcription(self, req: dict) -> Generator[str, None, None]:
         """
-        Generates an OpenAI Transcription using the audio file.
+        Generates an OpenAI Transcription using the audio file through `generate`
 
         Args:
             req (`dict`): The request containing the audio file and model information.
@@ -1275,7 +1310,7 @@ class ServeCommand(BaseTransformersCLICommand):
                 "Missing librosa dependency for audio transcription. Please install with `pip install librosa`"
             )
         model_id_and_revision = self.process_model_name(req["model"])
-        audio_model, audio_processor = self.load_audio_model_and_processor(model_id_and_revision)
+        audio_model, audio_processor = self.load_model_and_processor(model_id_and_revision)
 
         generation_streamer = TextIteratorStreamer(
             audio_processor.tokenizer, skip_special_tokens=True, skip_prompt=True
@@ -1306,6 +1341,63 @@ class ServeCommand(BaseTransformersCLICommand):
             yield f"{transcription.model_dump_json(exclude_none=True)}"
 
         return _generate_transcription()
+
+    def generate_speech(self, req: dict) -> Generator[bytes, None, None]:
+        """
+        Generates an OpenAI Speech completion through `generate`
+
+        Args:
+            req (`dict`): The request to generate a speech completion from.
+
+        Returns:
+            `Generator[str, None, None]`: A generator that yields the speech completion result.
+        """
+        # TODO: implement streaming speech? (currently, it's not streaming)
+        # TODO: implement /audio/voices
+        print(req)
+        from pydub import AudioSegment
+
+        if not is_soundfile_available():
+            raise ImportError(
+                "Missing soundfile dependency for speech generation. Please install with `pip install soundfile`"
+            )
+
+        model_id_and_revision = self.process_model_name(req["model"])
+        speech_model, speech_processor = self.load_model_and_processor(model_id_and_revision)
+
+        generation_config = create_generation_config_from_req(
+            req, model_generation_config=speech_model.generation_config
+        )
+
+        conversation = [
+            # 0 -> this is a voice (TODO)
+            {"role": "0", "content": [{"type": "text", "text": req["input"]}]},
+        ]
+        inputs = speech_processor.apply_chat_template(conversation, tokenize=True, return_dict=True)
+        inputs = inputs.to(speech_model.device)
+
+        generation_kwargs = {
+            "generation_config": generation_config,
+            "return_dict_in_generate": True,
+        }
+
+        def _generate_speech():
+            generated_audio = speech_model.generate(**inputs, **generation_kwargs, output_audio=True)
+            audio_data = generated_audio.audio[0].cpu().float().numpy()
+            # save audio as WAV with soundfile, convert to mp3 with pydub, and yield the mp3 data
+            with tempfile.NamedTemporaryFile(suffix=".wav") as temp_wav_file:
+                soundfile.write(
+                    file=temp_wav_file.name,
+                    data=audio_data,
+                    samplerate=speech_processor.feature_extractor.sampling_rate,
+                )
+                with tempfile.NamedTemporaryFile(suffix=".mp3") as temp_mp3_file:
+                    audio = AudioSegment.from_wav(temp_wav_file.name)
+                    audio.export(temp_mp3_file.name, format="mp3")
+                    with open(temp_mp3_file.name, "rb") as mp3_file:
+                        yield mp3_file.read()
+
+        return _generate_speech()
 
     def is_continuation(self, req: dict) -> bool:
         """
@@ -1467,31 +1559,6 @@ class ServeCommand(BaseTransformersCLICommand):
             processor = self.loaded_models[model_id_and_revision].processor
 
         return model, processor
-
-    def load_audio_model_and_processor(self, model_id_and_revision: str) -> tuple[PreTrainedModel, ProcessorMixin]:
-        """
-        Loads the audio model and processor from the given model ID and revision into the ServeCommand instance.
-
-        Args:
-            model_id_and_revision (`str`):
-                The model ID and revision to load.
-
-        Returns:
-            `tuple[PreTrainedModel, ProcessorMixin]`: The loaded audio model and processor.
-        """
-        if model_id_and_revision not in self.loaded_models or self.loaded_models[model_id_and_revision].is_deleted():
-            audio_model, audio_processor = self._load_model_and_data_processor(model_id_and_revision)
-            self.loaded_models[model_id_and_revision] = TimedModel(
-                audio_model,
-                timeout_seconds=self.args.model_timeout,
-                processor=audio_processor,
-            )
-        else:
-            self.loaded_models[model_id_and_revision].reset_timer()
-            audio_model = self.loaded_models[model_id_and_revision].model
-            audio_processor = self.loaded_models[model_id_and_revision].processor
-
-        return audio_model, audio_processor
 
 
 if __name__ == "__main__":
