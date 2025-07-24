@@ -75,7 +75,7 @@ if is_librosa_available():
     import librosa
 
 if is_soundfile_available():
-    import soundfile
+    import soundfile as sf
 
 serve_dependencies_available = (
     is_pydantic_available() and is_fastapi_available() and is_uvicorn_available() and is_openai_available()
@@ -85,8 +85,8 @@ if serve_dependencies_available:
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
-    from openai.types.audio.transcription import Transcription
     from openai.types.audio.speech_create_params import SpeechCreateParams
+    from openai.types.audio.transcription import Transcription
     from openai.types.audio.transcription_create_params import TranscriptionCreateParamsBase
     from openai.types.chat.chat_completion_chunk import (
         ChatCompletionChunk,
@@ -144,6 +144,7 @@ if serve_dependencies_available:
         """
         OpenAI's SpeechCreateParams with an additional field for the generation config (as a json string).
         """
+
         generation_config: str
 
     # Contrarily to OpenAI's output types, input types are `TypedDict`, which don't have built-in validation.
@@ -205,9 +206,7 @@ if serve_dependencies_available:
     UNUSED_SPEECH_FIELDS = {
         "voice",
         "instructions",
-        "response_format",
         "speed",
-        "stream_format",
     }
 
 
@@ -572,6 +571,13 @@ class ServeCommand(BaseTransformersCLICommand):
             validator=speech_validator,
             unused_fields=UNUSED_SPEECH_FIELDS,
         )
+        # Flags with partial support
+        if request.get("stream_format") is not None and request.get("stream_format") != "audio":
+            raise HTTPException(status_code=422, detail="`/v1/audio/speech` only supports `stream_format='audio'`")
+        if request.get("response_format") is not None and request.get("response_format") != "mp3":
+            raise HTTPException(
+                status_code=422, detail="`/v1/audio/speech` only supports `response_format` = 'mp3' or `wav`"
+            )
 
     def build_chat_completion_chunk(
         self,
@@ -693,7 +699,7 @@ class ServeCommand(BaseTransformersCLICommand):
             return StreamingResponse(output, media_type="text/event-stream")
 
         @app.post("/v1/audio/speech")
-        def chat_completion(request: dict):
+        def audio_speech(request: dict):
             self.validate_speech_request(request=request)
 
             output = self.generate_speech(request)
@@ -1344,23 +1350,21 @@ class ServeCommand(BaseTransformersCLICommand):
 
     def generate_speech(self, req: dict) -> Generator[bytes, None, None]:
         """
-        Generates an OpenAI Speech completion through `generate`
+        Generates an audio file through `generate`
 
         Args:
-            req (`dict`): The request to generate a speech completion from.
+            req (`dict`): The request to generate the audio from.
 
         Returns:
-            `Generator[str, None, None]`: A generator that yields the speech completion result.
+            `Generator[bytes, None, None]`: A generator that yields the audio data.
         """
         # TODO: implement streaming speech? (currently, it's not streaming)
         # TODO: implement /audio/voices
-        print(req)
-        from pydub import AudioSegment
-
         if not is_soundfile_available():
             raise ImportError(
                 "Missing soundfile dependency for speech generation. Please install with `pip install soundfile`"
             )
+        response_format = req.get("response_format", "mp3")  # NOTE: default is mp3
 
         model_id_and_revision = self.process_model_name(req["model"])
         speech_model, speech_processor = self.load_model_and_processor(model_id_and_revision)
@@ -1370,7 +1374,7 @@ class ServeCommand(BaseTransformersCLICommand):
         )
 
         conversation = [
-            # 0 -> this is a voice (TODO)
+            # 0 -> this is a voice (TODO, this is model-dependent?)
             {"role": "0", "content": [{"type": "text", "text": req["input"]}]},
         ]
         inputs = speech_processor.apply_chat_template(conversation, tokenize=True, return_dict=True)
@@ -1381,23 +1385,23 @@ class ServeCommand(BaseTransformersCLICommand):
             "return_dict_in_generate": True,
         }
 
-        def _generate_speech():
+        def _generate_speech(response_format):
             generated_audio = speech_model.generate(**inputs, **generation_kwargs, output_audio=True)
             audio_data = generated_audio.audio[0].cpu().float().numpy()
-            # save audio as WAV with soundfile, convert to mp3 with pydub, and yield the mp3 data
-            with tempfile.NamedTemporaryFile(suffix=".wav") as temp_wav_file:
-                soundfile.write(
-                    file=temp_wav_file.name,
+
+            # Save audio in the requested format and yield the audio data
+            # TODO (joao): add all formats supported by the request field `response_format`
+            with tempfile.NamedTemporaryFile(suffix=f".{response_format}") as temp_audio_file:
+                sf.write(
+                    file=temp_audio_file.name,
                     data=audio_data,
                     samplerate=speech_processor.feature_extractor.sampling_rate,
+                    format=response_format.upper(),
                 )
-                with tempfile.NamedTemporaryFile(suffix=".mp3") as temp_mp3_file:
-                    audio = AudioSegment.from_wav(temp_wav_file.name)
-                    audio.export(temp_mp3_file.name, format="mp3")
-                    with open(temp_mp3_file.name, "rb") as mp3_file:
-                        yield mp3_file.read()
+                with open(temp_audio_file.name, "rb") as audio_file:
+                    yield audio_file.read()
 
-        return _generate_speech()
+        return _generate_speech(response_format=response_format)
 
     def is_continuation(self, req: dict) -> bool:
         """
