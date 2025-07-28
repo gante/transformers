@@ -1367,9 +1367,9 @@ class ServeCommand(BaseTransformersCLICommand):
             )
         response_format = req.get("response_format", "mp3")  # NOTE: default is mp3
 
-        model_id_and_revision = self.process_model_name(req["model"])
+        # model_id_and_revision = self.process_model_name(req["model"])
         # speech_model, speech_processor = self.load_model_and_processor(model_id_and_revision)
-        pipe = pipeline("text-to-speech", model=model_id_and_revision, framework="pt")
+        pipe = pipeline("text-to-speech", model=req["model"], framework="pt")
 
         generation_config = create_generation_config_from_req(
             req, model_generation_config=pipe.model.generation_config
@@ -1379,26 +1379,24 @@ class ServeCommand(BaseTransformersCLICommand):
             # 0 -> this is a voice (TODO, this is model-dependent?)
             {"role": "0", "content": [{"type": "text", "text": req["input"]}]},
         ]
-        # inputs = speech_processor.apply_chat_template(conversation, tokenize=True, return_dict=True)
-        # inputs = inputs.to(speech_model.device)
+        inputs = pipe.tokenizer.apply_chat_template(conversation, tokenize=False)
 
         generation_kwargs = {
             "generation_config": generation_config,
             "return_dict_in_generate": True,
+            "output_audio": True,
         }
 
         def _generate_speech(response_format):
-            generated_audio = pipe(conversation, **generation_kwargs, output_audio=True)
-            breakpoint()
-            audio_data = generated_audio.audio[0].cpu().float().numpy()
+            generated_audio = pipe(inputs, generate_kwargs=generation_kwargs)
 
             # Save audio in the requested format and yield the audio data
             # TODO (joao): add all formats supported by the request field `response_format`
             with tempfile.NamedTemporaryFile(suffix=f".{response_format}") as temp_audio_file:
                 sf.write(
                     file=temp_audio_file.name,
-                    data=audio_data,
-                    samplerate=speech_processor.feature_extractor.sampling_rate,
+                    data=generated_audio["audio"],
+                    samplerate=generated_audio["sampling_rate"],
                     format=response_format.upper(),
                 )
                 with open(temp_audio_file.name, "rb") as audio_file:

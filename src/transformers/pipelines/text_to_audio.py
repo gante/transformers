@@ -79,12 +79,8 @@ class TextToAudioPipeline(Pipeline):
 
     See the list of available models on [huggingface.co/models](https://huggingface.co/models?filter=text-to-speech).
     """
-
-    # Introducing the processor at load time for new behaviour
-    _load_processor = True
-
     _pipeline_calls_generate = True
-    _load_processor = False
+    _load_processor = True
     _load_image_processor = False
     _load_feature_extractor = False
     _load_tokenizer = True
@@ -94,11 +90,8 @@ class TextToAudioPipeline(Pipeline):
         max_new_tokens=256,
     )
 
-    def __init__(self, *args, vocoder=None, sampling_rate=None, no_processor=True, **kwargs):
+    def __init__(self, *args, vocoder=None, sampling_rate=None, **kwargs):
         super().__init__(*args, **kwargs)
-
-        # Legacy behaviour just uses the tokenizer while new models use the processor as a whole at any given time
-        self.no_processor = no_processor
 
         if self.framework == "tf":
             raise ValueError("The TextToAudioPipeline is only available in PyTorch.")
@@ -129,7 +122,7 @@ class TextToAudioPipeline(Pipeline):
                     self.sampling_rate = sampling_rate
 
         # last fallback to get the sampling rate based on processor
-        if self.sampling_rate is None and not self.no_processor and hasattr(self.processor, "feature_extractor"):
+        if self.sampling_rate is None and self.processor is not None and hasattr(self.processor, "feature_extractor"):
             self.sampling_rate = self.processor.feature_extractor.sampling_rate
 
     def preprocess(self, text, **kwargs):
@@ -151,7 +144,7 @@ class TextToAudioPipeline(Pipeline):
 
             kwargs = new_kwargs
 
-        preprocessor = self.tokenizer if self.no_processor else self.processor
+        preprocessor = self.tokenizer if self.processor is None else self.processor
         output = preprocessor(text, **kwargs, return_tensors="pt")
 
         return output
@@ -247,17 +240,21 @@ class TextToAudioPipeline(Pipeline):
     def postprocess(self, audio):
         output_dict = {}
 
-        # We directly get the waveform
-        if self.no_processor:
+        # We need to postprocess to get the waveform
+        if self.processor is not None and hasattr(self.processor, "decode"):
+            waveform = self.processor.decode(audio)
+        # Or we can use the waveform directly
+        else:
             if isinstance(audio, dict):
-                waveform = audio["waveform"]
+                # TODO (joao): standardize model outputs?
+                waveform = (
+                    audio.get("waveform")  # e.g. speecht5 (?????????)
+                    or audio.get("audio")[0]  # e.g. csm
+                )
             elif isinstance(audio, tuple):
                 waveform = audio[0]
             else:
                 waveform = audio
-        # Or we need to postprocess to get the waveform
-        else:
-            waveform = self.processor.decode(audio)
 
         output_dict["audio"] = waveform.to(device="cpu", dtype=torch.float).numpy()
         output_dict["sampling_rate"] = self.sampling_rate
