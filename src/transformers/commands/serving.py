@@ -55,6 +55,7 @@ from .. import (
     PreTrainedTokenizerFast,
     ProcessorMixin,
     TextIteratorStreamer,
+    pipeline,
 )
 from ..generation.continuous_batching import ContinuousBatchingManager, RequestStatus
 from ..utils import is_torch_available, logging
@@ -1367,18 +1368,19 @@ class ServeCommand(BaseTransformersCLICommand):
         response_format = req.get("response_format", "mp3")  # NOTE: default is mp3
 
         model_id_and_revision = self.process_model_name(req["model"])
-        speech_model, speech_processor = self.load_model_and_processor(model_id_and_revision)
+        # speech_model, speech_processor = self.load_model_and_processor(model_id_and_revision)
+        pipe = pipeline("text-to-speech", model=model_id_and_revision, framework="pt")
 
         generation_config = create_generation_config_from_req(
-            req, model_generation_config=speech_model.generation_config
+            req, model_generation_config=pipe.model.generation_config
         )
 
         conversation = [
             # 0 -> this is a voice (TODO, this is model-dependent?)
             {"role": "0", "content": [{"type": "text", "text": req["input"]}]},
         ]
-        inputs = speech_processor.apply_chat_template(conversation, tokenize=True, return_dict=True)
-        inputs = inputs.to(speech_model.device)
+        # inputs = speech_processor.apply_chat_template(conversation, tokenize=True, return_dict=True)
+        # inputs = inputs.to(speech_model.device)
 
         generation_kwargs = {
             "generation_config": generation_config,
@@ -1386,7 +1388,8 @@ class ServeCommand(BaseTransformersCLICommand):
         }
 
         def _generate_speech(response_format):
-            generated_audio = speech_model.generate(**inputs, **generation_kwargs, output_audio=True)
+            generated_audio = pipe(conversation, **generation_kwargs, output_audio=True)
+            breakpoint()
             audio_data = generated_audio.audio[0].cpu().float().numpy()
 
             # Save audio in the requested format and yield the audio data
